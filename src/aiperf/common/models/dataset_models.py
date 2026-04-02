@@ -146,6 +146,10 @@ class Turn(AIPerfBaseModel):
         description="Pre-formatted OpenAI-compatible tool definitions. "
         "When set alongside raw_messages, injected into the API payload.",
     )
+    raw_extra_body: dict[str, Any] | None = Field(
+        default=None,
+        description="Extra fields merged into the request body (e.g., nvext for Dynamo session control).",
+    )
     texts: list[Text] = Field(
         default=[], description="Collection of text data in each turn."
     )

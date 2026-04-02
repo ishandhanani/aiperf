@@ -237,6 +237,11 @@ class MooncakeTrace(AIPerfBaseModel):
     session_id: str | None = Field(
         None, description="Unique identifier for the conversation session"
     )
+    nvext: dict[str, Any] | None = Field(
+        None,
+        description="NVIDIA Dynamo nvext payload (session_control, agent_hints, etc.) "
+        "injected directly into the request body.",
+    )
 
     @model_validator(mode="after")
     def validate_input(self) -> "MooncakeTrace":

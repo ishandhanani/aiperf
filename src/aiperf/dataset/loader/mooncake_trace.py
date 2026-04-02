@@ -93,12 +93,16 @@ class MooncakeTraceDatasetLoader(BaseTraceDatasetLoader[MooncakeTrace]):
 
     def _build_turn(self, trace: MooncakeTrace, prompt: str) -> Turn:
         if trace.messages is not None:
+            extra_body = None
+            if trace.nvext is not None:
+                extra_body = {"nvext": trace.nvext}
             return Turn(
                 timestamp=trace.timestamp,
                 delay=trace.delay,
                 max_tokens=trace.output_length,
                 raw_messages=trace.messages,
                 raw_tools=trace.tools,
+                raw_extra_body=extra_body,
             )
         return super()._build_turn(trace, prompt)
 
