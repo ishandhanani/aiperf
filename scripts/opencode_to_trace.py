@@ -195,6 +195,56 @@ def build_trace(db: sqlite3.Connection, parent_id: str, session_timeout: int = 6
     return all_entries
 
 
+def replicate_trace(
+    entries: list[dict], num_replicas: int, offset_ms: int
+) -> list[dict]:
+    """Create multiple replicas of a trace with unique system prompts and session IDs.
+
+    Each replica gets:
+    - A unique system prompt prefix (diverges KV from token 1)
+    - Unique session IDs (separate Dynamo sessions)
+    - Staggered start timestamps
+    """
+    if num_replicas <= 1:
+        return entries
+
+    all_entries = []
+    for replica in range(num_replicas):
+        time_offset = replica * offset_ms
+        system_prefix = (
+            f"You are user {replica + 1} of {num_replicas} in a shared workspace. "
+            f"Your unique workspace identifier is replica-{replica:04d}. "
+            f"Prioritize changes in your designated workspace area."
+        )
+
+        for entry in entries:
+            new_entry = {
+                **entry,
+                "session_id": f"r{replica}-{entry['session_id']}",
+                "timestamp": entry["timestamp"] + time_offset,
+            }
+            # Prepend system message to diverge prefix
+            msgs = list(new_entry["messages"])
+            if msgs and msgs[0].get("role") == "system":
+                msgs[0] = {**msgs[0], "content": system_prefix + "\n\n" + msgs[0]["content"]}
+            else:
+                msgs.insert(0, {"role": "system", "content": system_prefix})
+            new_entry["messages"] = msgs
+
+            # Update nvext session IDs
+            if "nvext" in new_entry:
+                nvext = json.loads(json.dumps(new_entry["nvext"]))
+                if "session_control" in nvext:
+                    sc = nvext["session_control"]
+                    sc["session_id"] = f"r{replica}-{sc['session_id']}"
+                new_entry["nvext"] = nvext
+
+            all_entries.append(new_entry)
+
+    all_entries.sort(key=lambda e: e["timestamp"])
+    return all_entries
+
+
 def main():
     parser = argparse.ArgumentParser(description="Extract OpenCode sessions to aiperf mooncake_trace JSONL")
     parser.add_argument("--db", type=Path, help="Path to OpenCode SQLite database")
@@ -204,9 +254,12 @@ def main():
     parser.add_argument("--all", action="store_true", help="Extract all sessions with subagents")
     parser.add_argument("-o", "--output", type=str, default="trace.jsonl", help="Output file or directory (with --all)")
     parser.add_argument("--timeout", type=int, default=_SESSION_TIMEOUT, help="Dynamo session timeout in seconds")
+    parser.add_argument("--replicas", type=int, default=1,
+                        help="Number of replicas per trace. Each gets a unique system prompt "
+                             "prefix and session IDs to simulate distinct concurrent users.")
+    parser.add_argument("--replica-offset-ms", type=int, default=5000,
+                        help="Milliseconds between replica start times (default: 5000)")
     args = parser.parse_args()
-
-    pass  # timeout handled via args
 
     db_path = args.db or find_db()
     db = sqlite3.connect(str(db_path))
@@ -254,6 +307,7 @@ def main():
             tree = next((t for t in trees if t["parent"]["id"] == pid), None)
             title = (tree["parent"]["title"] or "unknown")[:40].replace(" ", "_").replace("/", "_")
             entries = build_trace(db, pid, args.timeout)
+            entries = replicate_trace(entries, args.replicas, args.replica_offset_ms)
             out_file = out_dir / f"{title}.jsonl"
             with open(out_file, "w") as f:
                 for e in entries:
@@ -262,6 +316,7 @@ def main():
     else:
         for pid in targets:
             entries = build_trace(db, pid, args.timeout)
+            entries = replicate_trace(entries, args.replicas, args.replica_offset_ms)
             with open(args.output, "w") as f:
                 for e in entries:
                     f.write(json.dumps(e) + "\n")
