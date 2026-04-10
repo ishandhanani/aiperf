@@ -150,6 +150,12 @@ class Turn(AIPerfBaseModel):
         default=None,
         description="Extra fields merged into the request body (e.g., nvext for Dynamo session control).",
     )
+    compaction: bool = Field(
+        default=False,
+        description="When True, this turn resets accumulated context (e.g., after an agentic "
+        "session compaction). In DELTAS_WITHOUT_RESPONSES mode, advance_turn replaces "
+        "turn_list with this turn instead of appending.",
+    )
     texts: list[Text] = Field(
         default=[], description="Collection of text data in each turn."
     )

@@ -63,6 +63,8 @@ class UserSession(AIPerfBaseModel):
         turn = self.conversation.turns[turn_index]
         if self.context_mode == ConversationContextMode.MESSAGE_ARRAY_WITH_RESPONSES:
             self.turn_list = [turn]
+        elif turn.compaction:
+            self.turn_list = [turn]
         else:
             self.turn_list.append(turn)
         self.turn_index = turn_index

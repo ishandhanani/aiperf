@@ -1,32 +1,20 @@
 #!/usr/bin/env python3
 """Export OpenCode sessions to agentic_trace JSONL for aiperf.
 
-Reads the OpenCode SQLite database and exports per-step token counts and
-timing for agentic coding sessions. Each JSONL line represents one inference
-step (assistant message) with input/output token counts, inter-step delay
-(tool execution time), and compaction flags.
+Reads the OpenCode SQLite database and exports per-step deltas for agentic
+coding sessions. Each JSONL line represents the delta content for one
+inference step -- either the initial user message or tool results from the
+previous step's tool calls.
 
-This is the token-count-based counterpart to opencode_to_trace.py (which
-exports raw messages for mooncake_trace format).
+Uses DELTAS_WITHOUT_RESPONSES mode: aiperf accumulates deltas + live model
+responses. The server sees identical token prefixes and reuses KV cache.
 
 Usage:
-    # List sessions
     python scripts/opencode_export.py --list
-
-    # Export a specific session by title substring
     python scripts/opencode_export.py --match "inference engine" -o engine.jsonl
-
-    # Export by session ID
     python scripts/opencode_export.py --session-id ses_abc123 -o trace.jsonl
-
-    # Export all main sessions
     python scripts/opencode_export.py --all -o traces/
-
-    # Include subagent sessions as separate conversations
     python scripts/opencode_export.py --match "inference" --include-subagents -o trace.jsonl
-
-    # Create replicas for multi-user simulation
-    python scripts/opencode_export.py --match "inference" --replicas 4 -o trace.jsonl
 """
 
 import argparse
@@ -68,37 +56,22 @@ def list_sessions(db: sqlite3.Connection) -> None:
         msg_count = db.execute(
             "SELECT count(*) FROM message WHERE session_id = ?", (p["id"],)
         ).fetchone()[0]
-        assistant_count = _count_assistant_messages(db, p["id"])
         children = children_map.get(p["id"], [])
 
         print(f"\n{p['title']}")
         print(f"  id: {p['id']}")
-        print(f"  messages: {msg_count} total, {assistant_count} inference steps")
+        print(f"  messages: {msg_count}")
         if children:
             print(f"  subagents: {len(children)}")
             for c in children:
-                c_steps = _count_assistant_messages(db, c["id"])
-                print(f"    - {(c['title'] or '?')[:60]} ({c_steps} steps)")
+                cm = db.execute(
+                    "SELECT count(*) FROM message WHERE session_id = ?", (c["id"],)
+                ).fetchone()[0]
+                print(f"    - {(c['title'] or '?')[:60]} ({cm} msgs)")
 
 
-def _count_assistant_messages(db: sqlite3.Connection, session_id: str) -> int:
-    cur = db.execute(
-        "SELECT count(*) FROM message WHERE session_id = ? "
-        "AND json_extract(data, '$.role') = 'assistant'",
-        (session_id,),
-    )
-    return cur.fetchone()[0]
-
-
-def extract_steps(db: sqlite3.Connection, session_id: str) -> list[dict]:
-    """Extract per-step token counts and timing from a session."""
-    cur = db.execute(
-        "SELECT id, data FROM message WHERE session_id = ? ORDER BY time_created",
-        (session_id,),
-    )
-    messages = [(r[0], json.loads(r[1])) for r in cur.fetchall()]
-
-    # Prefetch all parts grouped by message
+def _get_parts(db: sqlite3.Connection, session_id: str) -> dict[str, list[dict]]:
+    """Prefetch all parts grouped by message_id."""
     cur = db.execute(
         "SELECT message_id, data FROM part WHERE session_id = ? ORDER BY id",
         (session_id,),
@@ -106,60 +79,152 @@ def extract_steps(db: sqlite3.Connection, session_id: str) -> list[dict]:
     parts_by_msg: dict[str, list[dict]] = {}
     for r in cur.fetchall():
         parts_by_msg.setdefault(r[0], []).append(json.loads(r[1]))
+    return parts_by_msg
+
+
+def _extract_tool_results(parts: list[dict]) -> str:
+    """Extract tool result text from an assistant message's parts.
+
+    Each tool part has state.output containing the tool's output text.
+    This is the content that gets fed back as the delta for the next step.
+    """
+    results = []
+    for part in parts:
+        if part.get("type") != "tool":
+            continue
+        state = part.get("state", {})
+        tool_name = part.get("tool", "unknown")
+        output = state.get("output", "")
+        if output:
+            results.append(f"[Tool: {tool_name}]\n{output}")
+    return "\n\n".join(results)
+
+
+def _extract_text_content(parts: list[dict]) -> str:
+    """Extract text content from message parts."""
+    texts = []
+    for part in parts:
+        if part.get("type") == "text" and part.get("text", "").strip():
+            texts.append(part["text"])
+    return "\n".join(texts)
+
+
+def extract_steps(db: sqlite3.Connection, session_id: str) -> list[dict]:
+    """Extract per-step deltas from a session.
+
+    For DELTAS_WITHOUT_RESPONSES mode:
+    - Step 0 (first user message): the user's prompt text
+    - Step N (after assistant response with tool calls): tool results text
+    - Compaction step: the compaction summary text
+    """
+    cur = db.execute(
+        "SELECT id, data FROM message WHERE session_id = ? ORDER BY time_created",
+        (session_id,),
+    )
+    messages = [(r[0], json.loads(r[1])) for r in cur.fetchall()]
+    parts_by_msg = _get_parts(db, session_id)
 
     steps = []
     prev_completed: int | None = None
+    # Track tool results from the previous assistant step
+    pending_tool_results: str | None = None
 
     for msg_id, data in messages:
-        if data.get("role") != "assistant":
-            continue
-
-        tokens = data.get("tokens", {})
-        if not tokens:
-            continue
-
-        time_info = data.get("time", {})
-        created = time_info.get("created")
-        completed = time_info.get("completed")
-
-        # Count tool calls from parts
         parts = parts_by_msg.get(msg_id, [])
-        tool_count = sum(1 for p in parts if p.get("type") == "tool")
+        role = data.get("role")
 
-        # Compute inter-step delay
-        delay = None
-        if prev_completed is not None and created is not None:
-            delay = max(0, created - prev_completed)
+        if role == "user":
+            # User messages: extract text content as a delta
+            text = _extract_text_content(parts)
+            if not text.strip():
+                # Compaction trigger or empty user message -- skip
+                continue
 
-        is_compaction = data.get("mode") == "compaction" or data.get("agent") == "compaction"
+            tokens = data.get("tokens", {})
+            time_info = data.get("time", {})
+            created = time_info.get("created")
 
-        cache = tokens.get("cache", {})
+            delay = None
+            if prev_completed is not None and created is not None:
+                delay = max(0, created - prev_completed)
 
-        step = {
-            "session_id": session_id,
-            "step_index": len(steps),
-            "input_length": tokens.get("input", 0),
-            "output_length": tokens.get("output", 0),
-            "reasoning_length": tokens.get("reasoning", 0),
-            "cache_read": cache.get("read", 0),
-            "cache_write": cache.get("write", 0),
-            "delay": delay,
-            "timestamp": created,
-            "is_compaction": is_compaction,
-            "finish_reason": data.get("finish"),
-            "tool_call_count": tool_count,
-            "model": data.get("modelID"),
-        }
-        steps.append(step)
+            steps.append({
+                "session_id": session_id,
+                "step_index": len(steps),
+                "text_input": text,
+                "output_length": 4096,  # placeholder, actual output determined by model
+                "delay": delay,
+                "timestamp": created,
+                "is_compaction": False,
+                "finish_reason": None,
+                "tool_call_count": 0,
+                "model": None,
+            })
 
-        if completed is not None:
-            prev_completed = completed
+        elif role == "assistant":
+            tokens = data.get("tokens", {})
+            time_info = data.get("time", {})
+            created = time_info.get("created")
+            completed = time_info.get("completed")
+            is_compaction = data.get("mode") == "compaction" or data.get("agent") == "compaction"
+
+            if is_compaction:
+                # Compaction: the summary text IS the delta (replaces all prior context)
+                summary_text = _extract_text_content(parts)
+                if summary_text.strip():
+                    delay = None
+                    if prev_completed is not None and created is not None:
+                        delay = max(0, created - prev_completed)
+
+                    steps.append({
+                        "session_id": session_id,
+                        "step_index": len(steps),
+                        "text_input": summary_text,
+                        "output_length": tokens.get("output", 1024),
+                        "reasoning_length": tokens.get("reasoning", 0),
+                        "delay": delay,
+                        "timestamp": created,
+                        "is_compaction": True,
+                        "finish_reason": data.get("finish"),
+                        "tool_call_count": 0,
+                        "model": data.get("modelID"),
+                    })
+            else:
+                # Normal assistant step
+                # If the previous step produced tool results, emit them as a delta first
+                tool_results = _extract_tool_results(parts)
+                tool_count = sum(1 for p in parts if p.get("type") == "tool")
+
+                if pending_tool_results:
+                    # Emit pending tool results from PREVIOUS step as a delta
+                    delay = None
+                    if prev_completed is not None and created is not None:
+                        delay = max(0, created - prev_completed)
+
+                    steps.append({
+                        "session_id": session_id,
+                        "step_index": len(steps),
+                        "text_input": pending_tool_results,
+                        "output_length": tokens.get("output", 1024),
+                        "reasoning_length": tokens.get("reasoning", 0),
+                        "delay": delay,
+                        "timestamp": created,
+                        "is_compaction": False,
+                        "finish_reason": data.get("finish"),
+                        "tool_call_count": tool_count,
+                        "model": data.get("modelID"),
+                    })
+
+                # Store this step's tool results for the next step's delta
+                pending_tool_results = tool_results if tool_results else None
+
+            if completed is not None:
+                prev_completed = completed
 
     return steps
 
 
 def normalize_timestamps(entries: list[dict]) -> None:
-    """Normalize timestamps relative to the earliest entry."""
     timestamps = [e["timestamp"] for e in entries if e["timestamp"] is not None]
     if not timestamps:
         return
@@ -172,7 +237,6 @@ def normalize_timestamps(entries: list[dict]) -> None:
 def replicate_entries(
     entries: list[dict], num_replicas: int, offset_ms: int
 ) -> list[dict]:
-    """Create replicated traces with unique session IDs and staggered timestamps."""
     if num_replicas <= 1:
         return entries
 
@@ -230,7 +294,6 @@ def main():
         db.close()
         return
 
-    # Find target session IDs
     cur = db.execute(
         "SELECT id, parent_id, title FROM session ORDER BY time_created DESC"
     )
@@ -255,18 +318,15 @@ def main():
         parser.print_help()
         sys.exit(1)
 
-    # Export
     if args.all and len(targets) > 1:
         out_dir = Path(args.output)
         out_dir.mkdir(parents=True, exist_ok=True)
         for pid in targets:
             session = next((s for s in parents if s["id"] == pid), None)
             title = (session["title"] or "unknown")[:40].replace(" ", "_").replace("/", "_")
-
             entries = _collect_entries(db, pid, all_sessions, args.include_subagents)
             normalize_timestamps(entries)
             entries = replicate_entries(entries, args.replicas, args.replica_offset_ms)
-
             out_file = out_dir / f"{title}.jsonl"
             write_jsonl(entries, str(out_file))
     else:
@@ -274,7 +334,6 @@ def main():
         for pid in targets:
             entries = _collect_entries(db, pid, all_sessions, args.include_subagents)
             all_entries.extend(entries)
-
         normalize_timestamps(all_entries)
         all_entries = replicate_entries(all_entries, args.replicas, args.replica_offset_ms)
         write_jsonl(all_entries, args.output)
@@ -288,15 +347,12 @@ def _collect_entries(
     all_sessions: list[dict],
     include_subagents: bool,
 ) -> list[dict]:
-    """Collect steps from a parent session and optionally its subagents."""
     entries = extract_steps(db, parent_id)
-
     if include_subagents:
         children = [s for s in all_sessions if s["parent_id"] == parent_id]
         for child in children:
             child_steps = extract_steps(db, child["id"])
             entries.extend(child_steps)
-
     entries.sort(key=lambda e: e.get("timestamp") or 0)
     return entries
 

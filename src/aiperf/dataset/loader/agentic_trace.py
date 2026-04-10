@@ -5,10 +5,17 @@
 
 Loads JSONL files where each line represents a single inference step from an
 agentic coding session (e.g. OpenCode, Claude Code). Steps are grouped by
-``session_id`` into multi-turn conversations. Each step carries its own
-``input_length``, so context mode is always MESSAGE_ARRAY_WITH_RESPONSES
-(no accumulation -- the sawtooth context pattern is encoded directly in the
-per-step input_length values).
+``session_id`` into multi-turn conversations using DELTAS_WITHOUT_RESPONSES
+mode: each turn is a delta (new content for that step), and the model's live
+response is captured and accumulated by aiperf.
+
+This ensures identical token prefixes across steps for KV cache reuse on the
+inference server -- the same approach used by kv-cache-tester.
+
+Two input modes:
+
+- ``text_input``: Real content deltas (e.g. tool results from OpenCode DB).
+- ``input_length``: Synthetic delta generation sized to token count.
 """
 
 from collections import defaultdict
@@ -28,16 +35,24 @@ class AgenticTraceDatasetLoader(BaseTraceDatasetLoader[AgenticTrace]):
 
     Loads JSONL files where each line is one inference step from an agentic
     coding session. Steps are grouped by session_id into multi-turn
-    conversations. Context mode is always MESSAGE_ARRAY_WITH_RESPONSES
-    because each step carries its own input_length (context grows within
-    a session, with compaction resets).
+    conversations using DELTAS_WITHOUT_RESPONSES mode.
 
-    Example JSONL::
+    Each turn represents the delta content added at that step (user message
+    or tool results). aiperf captures the model's live response and
+    accumulates it in the conversation history. This produces identical
+    token prefixes across steps, enabling KV cache reuse on the server.
 
-        {"session_id": "s1", "step_index": 0, "input_length": 13361, "output_length": 1091}
-        {"session_id": "s1", "step_index": 1, "input_length": 15000, "output_length": 800, "delay": 2000}
-        {"session_id": "s1", "step_index": 2, "input_length": 160848, "output_length": 1435, "is_compaction": true}
-        {"session_id": "s1", "step_index": 3, "input_length": 6000, "output_length": 500}
+    Compaction steps (is_compaction=true) reset the accumulated context.
+
+    Example JSONL (real content)::
+
+        {"session_id": "s1", "step_index": 0, "text_input": "Build an inference engine...", "output_length": 1091}
+        {"session_id": "s1", "step_index": 1, "text_input": "Tool result: file created...", "output_length": 800, "delay": 2000}
+
+    Example JSONL (synthetic)::
+
+        {"session_id": "s1", "step_index": 0, "input_length": 14000, "output_length": 1091}
+        {"session_id": "s1", "step_index": 1, "input_length": 2000, "output_length": 800, "delay": 2000}
     """
 
     @classmethod
@@ -76,7 +91,10 @@ class AgenticTraceDatasetLoader(BaseTraceDatasetLoader[AgenticTrace]):
     def _infer_context_mode(
         self, traces: list[AgenticTrace]
     ) -> ConversationContextMode:
-        return ConversationContextMode.MESSAGE_ARRAY_WITH_RESPONSES
+        return ConversationContextMode.DELTAS_WITHOUT_RESPONSES
+
+    def _get_text_input(self, trace: AgenticTrace) -> str | None:
+        return trace.text_input
 
     def _build_turn(self, trace: AgenticTrace, prompt: str) -> Turn:
         return Turn(
@@ -84,6 +102,7 @@ class AgenticTraceDatasetLoader(BaseTraceDatasetLoader[AgenticTrace]):
             delay=trace.delay,
             texts=[Text(name="text", contents=[prompt])],
             max_tokens=(trace.output_length + trace.reasoning_length),
+            compaction=trace.is_compaction,
         )
 
     # ------------------------------------------------------------------
@@ -99,6 +118,7 @@ class AgenticTraceDatasetLoader(BaseTraceDatasetLoader[AgenticTrace]):
             "finish_reason",
             "tool_call_count",
             "model",
+            "text_input",
         })
 
     def _reconstruct_traces(
@@ -111,6 +131,7 @@ class AgenticTraceDatasetLoader(BaseTraceDatasetLoader[AgenticTrace]):
                 AgenticTrace(
                     session_id=original.session_id,
                     step_index=original.step_index,
+                    text_input=original.text_input,
                     input_length=synth_dict.get("input_length", original.input_length),
                     output_length=synth_dict.get("output_length", original.output_length),
                     reasoning_length=synth_dict.get("reasoning_length", original.reasoning_length),

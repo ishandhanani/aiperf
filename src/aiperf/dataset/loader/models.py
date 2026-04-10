@@ -346,28 +346,49 @@ class AgenticTrace(AIPerfBaseModel):
 
     Each entry represents a single inference step in an agentic coding loop
     (e.g. from OpenCode or Claude Code). Steps are grouped by ``session_id``
-    into multi-turn conversations where each turn carries its own
-    ``input_length`` (MESSAGE_ARRAY_WITH_RESPONSES mode).
+    into multi-turn conversations using DELTAS_WITHOUT_RESPONSES mode: each
+    turn is a delta (new content added at that step), and the model's live
+    response is captured and accumulated by aiperf. This ensures identical
+    token prefixes across steps for KV cache reuse on the server.
+
+    Two input modes (exactly one required):
+
+    - ``text_input``: Real content from a trace (e.g. tool results extracted
+      from an OpenCode DB). Sent as-is. Prefix sharing comes from identical
+      tokens across turns.
+    - ``input_length``: Synthetic delta generation. The loader generates
+      synthetic text sized to ``input_length`` tokens. Used with Claude Code
+      traces where only token counts are available. Prefix sharing comes from
+      the accumulated conversation (live responses + deterministic synthetic
+      deltas).
 
     Context follows a sawtooth pattern: grows from ~14K to ~160K tokens
     across steps as tool results accumulate, then compacts back to ~1.5K.
-    Compaction steps are flagged via ``is_compaction``.
+    Compaction steps (``is_compaction=true``) reset the accumulated context.
 
     Examples:
-    - Basic step: ``{"session_id": "s1", "step_index": 0, "input_length": 13361, "output_length": 1091}``
-    - With timing: ``{"session_id": "s1", "step_index": 1, "input_length": 15000, "output_length": 800, "delay": 2000, "timestamp": 5000}``
-    - Compaction:  ``{"session_id": "s1", "step_index": 33, "input_length": 160848, "output_length": 1435, "is_compaction": true}``
-    - Post-compaction: ``{"session_id": "s1", "step_index": 34, "input_length": 6000, "output_length": 500}``
+    - Real content:  ``{"session_id": "s1", "step_index": 0, "text_input": "Build an inference engine...", "output_length": 1091}``
+    - Token count:   ``{"session_id": "s1", "step_index": 1, "input_length": 2000, "output_length": 800, "delay": 2000}``
+    - Compaction:    ``{"session_id": "s1", "step_index": 33, "text_input": "## Summary\\n...", "output_length": 1435, "is_compaction": true}``
     """
 
     type: Literal[CustomDatasetType.AGENTIC_TRACE] = CustomDatasetType.AGENTIC_TRACE
     session_id: str = Field(description="Session identifier grouping steps into a conversation")
     step_index: int = Field(description="Zero-based index of this inference step within the session")
-    input_length: int = Field(description="Input token count for this step")
+    text_input: str | None = Field(
+        default=None,
+        description="Real delta content for this step (user message or tool results). "
+        "Mutually exclusive with input_length.",
+    )
+    input_length: int | None = Field(
+        default=None,
+        description="Delta token count for synthetic generation. "
+        "Mutually exclusive with text_input.",
+    )
     output_length: int = Field(description="Output token count (excluding reasoning)")
     reasoning_length: int = Field(default=0, description="Reasoning/thinking token count")
-    cache_read: int = Field(default=0, description="Cached input tokens read")
-    cache_write: int = Field(default=0, description="Newly cached input tokens written")
+    cache_read: int = Field(default=0, description="Cached input tokens read (metadata)")
+    cache_write: int = Field(default=0, description="Newly cached input tokens written (metadata)")
     delay: int | float | None = Field(
         default=None,
         description="Inter-step delay in milliseconds (tool execution time between steps)",
@@ -376,10 +397,21 @@ class AgenticTrace(AIPerfBaseModel):
         default=None,
         description="Absolute timestamp in milliseconds from session start",
     )
-    is_compaction: bool = Field(default=False, description="Whether this step is a context compaction")
+    is_compaction: bool = Field(default=False, description="Whether this step resets accumulated context")
     finish_reason: str | None = Field(default=None, description="Step finish reason (tool-calls, tool_use, stop, end_turn)")
     tool_call_count: int = Field(default=0, description="Number of parallel tool calls in this step")
     model: str | None = Field(default=None, description="Model identifier for this step")
+
+    @model_validator(mode="after")
+    def validate_input_mode(self) -> "AgenticTrace":
+        """Validate that exactly one input mode is provided."""
+        has_text = self.text_input is not None
+        has_length = self.input_length is not None
+        if not has_text and not has_length:
+            raise ValueError("Exactly one of 'text_input' or 'input_length' must be provided")
+        if has_text and has_length:
+            raise ValueError("'text_input' and 'input_length' are mutually exclusive")
+        return self
 
 
 CustomDatasetT = TypeVar(
