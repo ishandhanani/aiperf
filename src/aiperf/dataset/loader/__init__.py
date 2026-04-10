@@ -2,12 +2,14 @@
 # SPDX-License-Identifier: Apache-2.0
 """Dataset loader package for AIPerf."""
 
+from aiperf.dataset.loader.agentic_trace import AgenticTraceDatasetLoader
 from aiperf.dataset.loader.bailian_trace import BailianTraceDatasetLoader
 from aiperf.dataset.loader.base_loader import BaseFileLoader, BaseLoader
 from aiperf.dataset.loader.base_public_dataset import BasePublicDatasetLoader
 from aiperf.dataset.loader.base_trace_loader import BaseTraceDatasetLoader
 from aiperf.dataset.loader.mixins import MediaConversionMixin
 from aiperf.dataset.loader.models import (
+    AgenticTrace,
     BailianTrace,
     MooncakeTrace,
     MultiTurn,
@@ -21,6 +23,8 @@ from aiperf.dataset.loader.sharegpt import ShareGPTLoader
 from aiperf.dataset.loader.single_turn import SingleTurnDatasetLoader
 
 __all__ = [
+    "AgenticTrace",
+    "AgenticTraceDatasetLoader",
     "BailianTrace",
     "BailianTraceDatasetLoader",
     "BaseFileLoader",

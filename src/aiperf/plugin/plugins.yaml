@@ -446,6 +446,16 @@ custom_dataset_loader:
       is_trace: true
       default_block_size: 16
 
+  agentic_trace:
+    class: aiperf.dataset.loader.agentic_trace:AgenticTraceDatasetLoader
+    description: |
+      Agentic coding trace loader. Each JSONL line is one inference step
+      from an agentic coding session (OpenCode, Claude Code, etc). Steps
+      grouped by session_id with sawtooth context growth and compaction.
+      Uses MESSAGE_ARRAY_WITH_RESPONSES context mode.
+    metadata:
+      is_trace: true
+
   mooncake_trace:
     class: aiperf.dataset.loader.mooncake_trace:MooncakeTraceDatasetLoader
     description: |

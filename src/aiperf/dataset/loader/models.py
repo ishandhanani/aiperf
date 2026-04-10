@@ -341,8 +341,49 @@ class BailianTrace(AIPerfBaseModel):
     )
 
 
+class AgenticTrace(AIPerfBaseModel):
+    """Defines the schema for agentic coding trace data.
+
+    Each entry represents a single inference step in an agentic coding loop
+    (e.g. from OpenCode or Claude Code). Steps are grouped by ``session_id``
+    into multi-turn conversations where each turn carries its own
+    ``input_length`` (MESSAGE_ARRAY_WITH_RESPONSES mode).
+
+    Context follows a sawtooth pattern: grows from ~14K to ~160K tokens
+    across steps as tool results accumulate, then compacts back to ~1.5K.
+    Compaction steps are flagged via ``is_compaction``.
+
+    Examples:
+    - Basic step: ``{"session_id": "s1", "step_index": 0, "input_length": 13361, "output_length": 1091}``
+    - With timing: ``{"session_id": "s1", "step_index": 1, "input_length": 15000, "output_length": 800, "delay": 2000, "timestamp": 5000}``
+    - Compaction:  ``{"session_id": "s1", "step_index": 33, "input_length": 160848, "output_length": 1435, "is_compaction": true}``
+    - Post-compaction: ``{"session_id": "s1", "step_index": 34, "input_length": 6000, "output_length": 500}``
+    """
+
+    type: Literal[CustomDatasetType.AGENTIC_TRACE] = CustomDatasetType.AGENTIC_TRACE
+    session_id: str = Field(description="Session identifier grouping steps into a conversation")
+    step_index: int = Field(description="Zero-based index of this inference step within the session")
+    input_length: int = Field(description="Input token count for this step")
+    output_length: int = Field(description="Output token count (excluding reasoning)")
+    reasoning_length: int = Field(default=0, description="Reasoning/thinking token count")
+    cache_read: int = Field(default=0, description="Cached input tokens read")
+    cache_write: int = Field(default=0, description="Newly cached input tokens written")
+    delay: int | float | None = Field(
+        default=None,
+        description="Inter-step delay in milliseconds (tool execution time between steps)",
+    )
+    timestamp: int | float | None = Field(
+        default=None,
+        description="Absolute timestamp in milliseconds from session start",
+    )
+    is_compaction: bool = Field(default=False, description="Whether this step is a context compaction")
+    finish_reason: str | None = Field(default=None, description="Step finish reason (tool-calls, tool_use, stop, end_turn)")
+    tool_call_count: int = Field(default=0, description="Number of parallel tool calls in this step")
+    model: str | None = Field(default=None, description="Model identifier for this step")
+
+
 CustomDatasetT = TypeVar(
     "CustomDatasetT",
-    bound=SingleTurn | MultiTurn | RandomPool | MooncakeTrace | BailianTrace,
+    bound=SingleTurn | MultiTurn | RandomPool | MooncakeTrace | BailianTrace | AgenticTrace,
 )
 """A union type of all custom data types."""
