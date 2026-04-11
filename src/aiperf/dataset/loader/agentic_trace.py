@@ -68,6 +68,28 @@ class AgenticTraceDatasetLoader(BaseTraceDatasetLoader[AgenticTrace]):
             return False
 
     # ------------------------------------------------------------------
+    # Filtering hooks
+    # ------------------------------------------------------------------
+
+    def _filter_and_cap_trace(self, trace: AgenticTrace) -> bool:
+        """Extend base filtering to handle text_input mode.
+
+        The base class checks input_length against max_isl, but text_input
+        traces have input_length=None so filtering is silently skipped.
+        Estimate tokens from text length (4 chars/token) for these entries.
+        """
+        if (
+            trace.text_input is not None
+            and trace.input_length is None
+            and self._max_isl is not None
+        ):
+            estimated_tokens = len(trace.text_input) // 4
+            if estimated_tokens > self._max_isl:
+                self._skipped_max_isl += 1
+                return False
+        return super()._filter_and_cap_trace(trace)
+
+    # ------------------------------------------------------------------
     # Template-method hooks (see BaseTraceDatasetLoader.load_dataset)
     # ------------------------------------------------------------------
 

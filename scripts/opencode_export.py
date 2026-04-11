@@ -19,6 +19,7 @@ Usage:
 
 import argparse
 import json
+import random
 import sqlite3
 import sys
 from pathlib import Path
@@ -256,6 +257,51 @@ def replicate_entries(
     return all_entries
 
 
+def advance_session(
+    steps: list[dict], pct: float, jitter: float, rng: random.Random
+) -> list[dict]:
+    """Skip the first pct% of steps, replacing the new first step with a
+    synthetic bootstrap sized to the cumulative context at that point.
+
+    This lets users start mid-trace so the server reaches steady-state
+    KV cache occupancy faster.
+    """
+    if pct <= 0 or len(steps) <= 2:
+        return steps
+
+    actual_pct = max(0.0, min(0.95, pct + rng.uniform(-jitter, jitter)))
+    start_idx = int(len(steps) * actual_pct)
+    if start_idx == 0:
+        return steps
+
+    # Estimate cumulative context at the start point (deltas + estimated responses)
+    cumulative = 0
+    for s in steps[:start_idx]:
+        if s.get("text_input"):
+            cumulative += len(s["text_input"]) // 4
+        elif s.get("input_length"):
+            cumulative += s["input_length"]
+        cumulative += s.get("output_length", 0)
+
+    advanced = [s.copy() for s in steps[start_idx:]]
+
+    # Replace first step with a synthetic bootstrap
+    first = advanced[0].copy()
+    first["step_index"] = 0
+    first["text_input"] = None
+    first["input_length"] = max(1, cumulative)
+    first["delay"] = None
+    first["timestamp"] = steps[start_idx].get("timestamp", 0)
+    first["is_compaction"] = False
+    advanced[0] = first
+
+    # Re-index
+    for i, s in enumerate(advanced):
+        s["step_index"] = i
+
+    return advanced
+
+
 def write_jsonl(entries: list[dict], output_path: str) -> None:
     with open(output_path, "w") as f:
         for e in entries:
@@ -283,6 +329,14 @@ def main():
     parser.add_argument("--replicas", type=int, default=1, help="Number of trace replicas")
     parser.add_argument(
         "--replica-offset-ms", type=int, default=5000, help="Milliseconds between replica starts"
+    )
+    parser.add_argument(
+        "--advance-pct", type=float, default=0.0,
+        help="Skip first N%% of steps per session for steady-state benchmarking (0.0-0.95)",
+    )
+    parser.add_argument(
+        "--advance-jitter", type=float, default=0.0,
+        help="Random jitter around advance-pct so sessions start at different points (0.0-0.5)",
     )
     args = parser.parse_args()
 
@@ -324,7 +378,7 @@ def main():
         for pid in targets:
             session = next((s for s in parents if s["id"] == pid), None)
             title = (session["title"] or "unknown")[:40].replace(" ", "_").replace("/", "_")
-            entries = _collect_entries(db, pid, all_sessions, args.include_subagents)
+            entries = _collect_entries(db, pid, all_sessions, args.include_subagents, args.advance_pct, args.advance_jitter)
             normalize_timestamps(entries)
             entries = replicate_entries(entries, args.replicas, args.replica_offset_ms)
             out_file = out_dir / f"{title}.jsonl"
@@ -332,7 +386,7 @@ def main():
     else:
         all_entries: list[dict] = []
         for pid in targets:
-            entries = _collect_entries(db, pid, all_sessions, args.include_subagents)
+            entries = _collect_entries(db, pid, all_sessions, args.include_subagents, args.advance_pct, args.advance_jitter)
             all_entries.extend(entries)
         normalize_timestamps(all_entries)
         all_entries = replicate_entries(all_entries, args.replicas, args.replica_offset_ms)
@@ -346,12 +400,20 @@ def _collect_entries(
     parent_id: str,
     all_sessions: list[dict],
     include_subagents: bool,
+    advance_pct: float = 0.0,
+    advance_jitter: float = 0.0,
 ) -> list[dict]:
+    rng = random.Random(hash(parent_id))
     entries = extract_steps(db, parent_id)
+    if advance_pct > 0:
+        entries = advance_session(entries, advance_pct, advance_jitter, rng)
     if include_subagents:
         children = [s for s in all_sessions if s["parent_id"] == parent_id]
         for child in children:
             child_steps = extract_steps(db, child["id"])
+            if advance_pct > 0:
+                child_rng = random.Random(hash(child["id"]))
+                child_steps = advance_session(child_steps, advance_pct, advance_jitter, child_rng)
             entries.extend(child_steps)
     entries.sort(key=lambda e: e.get("timestamp") or 0)
     return entries
