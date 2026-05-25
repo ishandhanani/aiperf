@@ -61,6 +61,7 @@ from aiperf.config.loader.parsing import (
     normalize_http_urls,
     parse_file,
     parse_float_or_float_list,
+    parse_headers_as_tuple_list,
     parse_int_or_int_list,
     parse_str_as_numeric_dict,
     parse_str_or_dict_as_tuple_list,
@@ -466,7 +467,7 @@ class CLIConfig(BaseConfig):
             "Useful for custom authentication, tracking, or API-specific requirements. Combined with auto-generated headers "
             "(e.g., `Authorization` from `--api-key`).",
         ),
-        BeforeValidator(parse_str_or_dict_as_tuple_list),
+        BeforeValidator(parse_headers_as_tuple_list),
         CLIParameter(
             name=(
                 "--header",

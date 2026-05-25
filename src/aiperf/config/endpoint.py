@@ -15,6 +15,7 @@ from urllib.parse import urlparse
 
 from pydantic import (
     AfterValidator,
+    BeforeValidator,
     ConfigDict,
     Field,
     field_serializer,
@@ -28,7 +29,7 @@ from aiperf.common.enums import (
     RequestContentType,
 )
 from aiperf.config.base import BaseConfig
-from aiperf.config.loader.parsing import normalize_http_urls
+from aiperf.config.loader.parsing import normalize_http_urls, parse_headers_as_dict
 from aiperf.plugin.enums import (
     EndpointType,
     TransportType,
@@ -258,6 +259,7 @@ class EndpointConfig(BaseConfig):
             "Useful for authentication, tracing, or routing. "
             "Values support environment variable substitution.",
         ),
+        BeforeValidator(parse_headers_as_dict),
     ]
 
     @field_serializer("headers", when_used="json")

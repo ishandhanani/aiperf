@@ -303,6 +303,7 @@ class DagJsonlLoader(BaseFileLoader):
             model=t.model,
             max_tokens=t.max_tokens,
             extra_body=dict(t.extra) if t.extra is not None else None,
+            headers=dict(t.headers) if t.headers is not None else None,
             delay=self._delay_cap_tracker.clamp(t.delay),
         )
 

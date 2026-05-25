@@ -20,11 +20,18 @@ Unknown top-level keys on either a conversation or a turn are rejected at
 load time so typos surface immediately.
 """
 
-from typing import Any
+from typing import Annotated, Any
 
-from pydantic import ConfigDict, Field, field_validator, model_validator
+from pydantic import (
+    BeforeValidator,
+    ConfigDict,
+    Field,
+    field_validator,
+    model_validator,
+)
 
 from aiperf.common.models import AIPerfBaseModel
+from aiperf.config.loader.parsing import parse_headers_as_dict
 from aiperf.dataset.loader.models import validate_chat_messages
 
 
@@ -135,6 +142,14 @@ class DagTurn(AIPerfBaseModel):
         "and vendor-specific knobs like ``ignore_eos`` or ``min_tokens``. Keys "
         "are merged into the top level of the request body at dispatch time.",
     )
+    headers: Annotated[
+        dict[str, str] | None,
+        BeforeValidator(parse_headers_as_dict),
+        Field(
+            default=None,
+            description="Per-turn HTTP headers merged into the request at dispatch time.",
+        ),
+    ]
 
     # --- Structural (DAG scheduling) fields, not sent on the wire -----------
     forks: list[str | DagFork] = Field(

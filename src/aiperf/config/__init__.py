@@ -110,6 +110,8 @@ from aiperf.config.loader import (
 from aiperf.config.loader.parsing import (
     coerce_value,
     parse_file,
+    parse_headers_as_dict,
+    parse_headers_as_tuple_list,
     parse_service_types,
     parse_str_as_numeric_dict,
     parse_str_or_csv_list,
@@ -302,6 +304,8 @@ __all__ = [
     "load_config",
     "load_config_from_string",
     "merge_configs",
+    "parse_headers_as_dict",
+    "parse_headers_as_tuple_list",
     "parse_file",
     "parse_service_types",
     "parse_str_as_numeric_dict",

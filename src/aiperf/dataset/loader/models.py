@@ -1,11 +1,12 @@
 # SPDX-FileCopyrightText: Copyright (c) 2025-2026 NVIDIA CORPORATION & AFFILIATES. All rights reserved.
 # SPDX-License-Identifier: Apache-2.0
 
-from typing import Any, Literal, TypeVar
+from typing import Annotated, Any, Literal, TypeVar
 
-from pydantic import ConfigDict, Field, model_validator
+from pydantic import BeforeValidator, ConfigDict, Field, model_validator
 
 from aiperf.common.models import AIPerfBaseModel, Audio, Image, Text, Video
+from aiperf.config.loader.parsing import parse_headers_as_dict
 from aiperf.plugin.enums import CustomDatasetType
 
 
@@ -102,6 +103,14 @@ class SingleTurn(AIPerfBaseModel):
         default=None,
         description="Per-turn extra fields shallow-merged into the request body at dispatch time. Keys override formatter defaults on collision.",
     )
+    headers: Annotated[
+        dict[str, str] | None,
+        BeforeValidator(parse_headers_as_dict),
+        Field(
+            default=None,
+            description="Per-turn HTTP headers merged into the request at dispatch time.",
+        ),
+    ]
 
     @model_validator(mode="after")
     def validate_mutually_exclusive_fields(self) -> "SingleTurn":
@@ -273,6 +282,14 @@ class MooncakeTrace(AIPerfBaseModel):
         default=None,
         description="Per-turn extra fields shallow-merged into the request body at dispatch time. Keys override formatter defaults on collision.",
     )
+    headers: Annotated[
+        dict[str, str] | None,
+        BeforeValidator(parse_headers_as_dict),
+        Field(
+            default=None,
+            description="Per-turn HTTP headers merged into the request at dispatch time.",
+        ),
+    ]
 
     @model_validator(mode="after")
     def validate_input(self) -> "MooncakeTrace":

@@ -168,6 +168,36 @@ class TestMultiTurnDatasetLoader:
         assert multi_turn.turns[1].texts is None
         assert multi_turn.turns[1].delay == 1000
 
+    def test_per_turn_headers_survive_conversion(self, create_jsonl_file, default_cfg):
+        content = [
+            json.dumps(
+                {
+                    "session_id": "conv_001",
+                    "turns": [
+                        {
+                            "text": "Warm this prefix.",
+                            "headers": {"x-worker-instance-id": 0},
+                        },
+                        {
+                            "text": "Reuse it elsewhere.",
+                            "headers": {"x-worker-instance-id": 1},
+                        },
+                    ],
+                }
+            )
+        ]
+        filename = create_jsonl_file(content)
+        loader = MultiTurnDatasetLoader(
+            filename=filename, run=make_run_from_cli(default_cfg)
+        )
+
+        dataset = loader.load_dataset()
+        conversations = loader.convert_to_conversations(dataset)
+
+        turns = conversations[0].turns
+        assert turns[0].headers == {"x-worker-instance-id": "0"}
+        assert turns[1].headers == {"x-worker-instance-id": "1"}
+
     def test_load_multiple_conversations(self, create_jsonl_file, default_cfg):
         """Test loading multiple conversations from file."""
         content = [

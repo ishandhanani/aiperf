@@ -3,9 +3,9 @@
 
 from functools import cached_property
 from pathlib import Path
-from typing import Any, ClassVar
+from typing import Annotated, Any, ClassVar
 
-from pydantic import Field, field_validator
+from pydantic import BeforeValidator, Field, field_validator
 
 from aiperf.common.enums import (
     ConversationBranchMode,
@@ -16,6 +16,7 @@ from aiperf.common.models.base_models import AIPerfBaseModel
 from aiperf.common.models.branch import ConversationBranchInfo
 from aiperf.common.models.prerequisites import TurnPrerequisite
 from aiperf.common.types import MediaTypeT
+from aiperf.config.loader.parsing import parse_headers_as_dict
 from aiperf.plugin.enums import DatasetClientStoreType, DatasetSamplingStrategy
 
 
@@ -209,6 +210,16 @@ class Turn(AIPerfBaseModel):
         "Merged into the top level of the chat-completions payload at "
         "dispatch time, matching the OpenAI SDK's extra_body convention.",
     )
+    headers: Annotated[
+        dict[str, str] | None,
+        BeforeValidator(parse_headers_as_dict),
+        Field(
+            default=None,
+            description="Per-turn HTTP headers merged into the request headers "
+            "for the dispatching turn. Values are stringified to match HTTP "
+            "header semantics.",
+        ),
+    ]
     prerequisites: list[TurnPrerequisite] = Field(
         default_factory=list,
         description="Conditions gating dispatch of this turn (DAG authoring). "
@@ -282,6 +293,7 @@ class Turn(AIPerfBaseModel):
             ],
             raw_payload=self.raw_payload,
             extra_body=dict(self.extra_body) if self.extra_body is not None else None,
+            headers=dict(self.headers) if self.headers is not None else None,
             prerequisites=list(self.prerequisites),
             branch_ids=list(self.branch_ids),
             audio_duration_seconds=self.audio_duration_seconds,

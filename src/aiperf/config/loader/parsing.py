@@ -239,6 +239,78 @@ def parse_str_or_dict_as_tuple_list(input: Any | None) -> list[tuple[str, Any]] 
     raise ValueError(f"User Config: {input} - must be a valid string, list, or dict")
 
 
+def _stringify_header_value(value: Any) -> str:
+    if value is None:
+        raise ValueError("HTTP header values must not be null")
+    if isinstance(value, (dict, list, tuple, set)):
+        raise ValueError(
+            f"HTTP header values must be scalar strings, got {type(value).__name__}"
+        )
+    return str(value)
+
+
+def _parse_header_sequence_as_tuple_list(input: Any) -> list[tuple[str, str]]:
+    output: list[tuple[str, str]] = []
+    for item in input:
+        if isinstance(item, (list, tuple)) and len(item) == 2:
+            key, value = item
+            output.append((str(key), _stringify_header_value(value)))
+        else:
+            res = parse_headers_as_tuple_list(item)
+            if res is not None:
+                output.extend(res)
+    return output
+
+
+def _parse_header_str_as_tuple_list(input: str) -> list[tuple[str, str]]:
+    if input.startswith("{"):
+        try:
+            loaded = load_json_str(input)
+        except orjson.JSONDecodeError as e:
+            raise ValueError(
+                f"User Config: {input} - must be a valid JSON string"
+            ) from e
+        if not isinstance(loaded, dict):
+            raise ValueError(f"User Config: {input} - must be a JSON object")
+        return [
+            (str(key), _stringify_header_value(value)) for key, value in loaded.items()
+        ]
+
+    result: list[tuple[str, str]] = []
+    for item in input.split(","):
+        parts = item.split(":", 1)
+        if len(parts) != 2:
+            raise ValueError(
+                f"User Config: {input} - each item must be in 'key:value' format"
+            )
+        key, value = parts
+        result.append((key.strip(), _stringify_header_value(value.strip())))
+    return result
+
+
+def parse_headers_as_tuple_list(input: Any | None) -> list[tuple[str, str]] | None:
+    """Parse HTTP headers while preserving all header values as strings."""
+    if input is None:
+        return None
+    if isinstance(input, (list, tuple, set)):
+        return _parse_header_sequence_as_tuple_list(input)
+    if isinstance(input, dict):
+        return [
+            (str(key), _stringify_header_value(value)) for key, value in input.items()
+        ]
+    if isinstance(input, str):
+        return _parse_header_str_as_tuple_list(input)
+
+    raise ValueError(f"User Config: {input} - must be a valid string, list, or dict")
+
+
+def parse_headers_as_dict(input: Any | None) -> dict[str, str] | None:
+    parsed = parse_headers_as_tuple_list(input)
+    if parsed is None:
+        return None
+    return dict(parsed)
+
+
 def print_str_or_list(input: Any) -> str:
     """Convert a list, Enum, or scalar to a display string.
 

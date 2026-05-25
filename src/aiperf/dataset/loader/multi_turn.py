@@ -159,6 +159,7 @@ class MultiTurnDatasetLoader(BaseFileLoader, MediaConversionMixin):
                             role=single_turn.role,
                             max_tokens=single_turn.output_length,
                             extra_body=single_turn.extra,
+                            headers=single_turn.headers,
                         )
                     )
             conversations.append(conversation)

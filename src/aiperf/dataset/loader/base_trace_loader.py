@@ -282,6 +282,7 @@ class BaseTraceDatasetLoader(BaseFileLoader, Generic[TraceT]):
             texts=[Text(name="text", contents=[prompt])],
             max_tokens=getattr(trace, "output_length", None),
             extra_body=getattr(trace, "extra", None),
+            headers=getattr(trace, "headers", None),
         )
 
     def convert_to_conversations(
